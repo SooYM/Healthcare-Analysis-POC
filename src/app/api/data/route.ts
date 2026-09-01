@@ -1,3 +1,24 @@
+/**
+ * @file route.ts
+ * @module app/api/data/route
+ * @description Primary data streaming endpoint serving longitudinal biomarker records, Pearson correlation matrices, and summary statistics.
+ *
+ * Query execution flow:
+ * 1. Validates incoming JSON payload (date bounds, biomarker list, patient ID, row limit) via Zod.
+ * 2. Fetches matching records from the active data source (Local CSV -> BigQuery -> Demo).
+ * 3. Extracts distinct biomarker lists and clinical panel groupings.
+ * 4. Computes Pearson correlation matrix (\(N \times N\)) across same-visit biomarker pairs.
+ * 5. Computes cohort summary statistics (mean, std, min, max, n) for each biomarker.
+ * 6. Returns structured `DataResponse` payload.
+ *
+ * @example
+ * ```bash
+ * curl -X POST http://localhost:3000/api/data \
+ *   -H "Content-Type: application/json" \
+ *   -d '{"dateFrom": "2018-08-24", "dateTo": "2019-07-24", "rowLimit": 5000}'
+ * ```
+ */
+
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import {
@@ -6,18 +27,33 @@ import {
   parseBigQueryViewNames,
 } from "@/lib/env";
 import { queryBiomarkerLong } from "@/lib/bigquery";
+import { queryLocalBiomarkers } from "@/lib/local-dataset";
 import { generateDemoRows } from "@/lib/demo-data";
 import { correlationMatrix, summaryStats } from "@/lib/stats";
 import type { DataResponse } from "@/types";
 
+/**
+ * Validation schema for the POST request body.
+ */
 const bodySchema = z.object({
-  dateFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  dateTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  /** Start date in YYYY-MM-DD format (inclusive) */
+  dateFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Invalid dateFrom format (expected YYYY-MM-DD)"),
+  /** End date in YYYY-MM-DD format (inclusive) */
+  dateTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Invalid dateTo format (expected YYYY-MM-DD)"),
+  /** Optional array of biomarker names to filter */
   biomarkers: z.array(z.string()).optional(),
-  rowLimit: z.number().int().min(100).max(200000).optional().default(50000),
+  /** Maximum number of records to return (100 to 200,000, default 80,000) */
+  rowLimit: z.number().int().min(100).max(200000).optional().default(80000),
+  /** Optional specific patient ID to filter */
   patientId: z.string().optional(),
 });
 
+/**
+ * Handles HTTP POST requests to query longitudinal biomarker observation data.
+ *
+ * @param req - HTTP Request containing JSON body matching `bodySchema`
+ * @returns JSON response containing `DataResponse` object or validation error.
+ */
 export async function POST(req: Request) {
   let json: unknown;
   try {
@@ -38,38 +74,33 @@ export async function POST(req: Request) {
   const env = getServerEnv();
 
   let rows;
-  let source: DataResponse["source"] = "demo";
+  let source: DataResponse["source"] = "local_csv";
   let demoReason: string | undefined;
+  let allBiomarkers: string[] | undefined;
+  let biomarkerGroups: Record<string, string[]> | undefined;
+  let minDate = dateFrom;
+  let maxDate = dateTo;
 
   const viewNames = parseBigQueryViewNames(env);
   const hasUnion = viewNames.length > 0;
-
   const tableFqn = env.BIGQUERY_TABLE_FQN ?? "";
   const placeholderTable =
     tableFqn.includes("REPLACE_ME") || tableFqn.endsWith(".A2.");
   const hasSingle = Boolean(tableFqn) && !placeholderTable;
 
+  const forceBigQuery = process.env.DATA_SOURCE === "bigquery";
   const useBigQuery =
+    forceBigQuery &&
     !isDemoMode() &&
     Boolean(env.GCP_PROJECT_ID) &&
     (hasUnion || hasSingle);
 
   if (isDemoMode()) {
-    demoReason = "DEMO_MODE=true — set DEMO_MODE=false to use BigQuery.";
+    demoReason = "DEMO_MODE=true — using synthetic demo data.";
     rows = generateDemoRows({ dateFrom, dateTo, biomarkerFilter: biomarkers, patientId });
-  } else if (!env.GCP_PROJECT_ID) {
-    demoReason =
-      "Set GCP_PROJECT_ID in .env.local (and GOOGLE_APPLICATION_CREDENTIALS if using a service account).";
-    rows = generateDemoRows({ dateFrom, dateTo, biomarkerFilter: biomarkers, patientId });
-  } else if (!hasUnion && !hasSingle) {
-    demoReason =
-      "BigQuery not configured: set BIGQUERY_VIEW_NAMES (comma-separated views in dataset A2) or a valid BIGQUERY_TABLE_FQN.";
-    rows = generateDemoRows({ dateFrom, dateTo, biomarkerFilter: biomarkers, patientId });
-  } else if (!hasUnion && placeholderTable) {
-    demoReason =
-      "BIGQUERY_TABLE_FQN still has a placeholder (e.g. REPLACE_ME). Either set BIGQUERY_VIEW_NAMES for multiple views or set BIGQUERY_TABLE_FQN to a real table.";
-    rows = generateDemoRows({ dateFrom, dateTo, biomarkerFilter: biomarkers, patientId });
+    source = "demo";
   } else if (useBigQuery) {
+    // Attempt BigQuery querying
     try {
       rows = await queryBiomarkerLong(env, {
         dateFrom,
@@ -81,42 +112,85 @@ export async function POST(req: Request) {
       source = "bigquery";
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      console.error("BigQuery error, falling back to demo:", e);
-      demoReason = `BigQuery query failed (showing demo data): ${msg}`;
+      console.warn("BigQuery query failed, falling back to local CSV dataset:", msg);
+      try {
+        const localRes = queryLocalBiomarkers({
+          dateFrom,
+          dateTo,
+          biomarkers,
+          patientId,
+          rowLimit,
+        });
+        rows = localRes.rows;
+        allBiomarkers = localRes.biomarkers;
+        biomarkerGroups = localRes.biomarkerGroups;
+        minDate = localRes.dateRange.min;
+        maxDate = localRes.dateRange.max;
+        source = "local_csv";
+      } catch (localErr) {
+        demoReason = `BigQuery and Local CSV failed: ${msg}`;
+        rows = generateDemoRows({ dateFrom, dateTo, biomarkerFilter: biomarkers, patientId });
+        source = "demo";
+      }
+    }
+  } else {
+    // Default / Preferred: Local Medical Records CSV Engine
+    try {
+      const localRes = queryLocalBiomarkers({
+        dateFrom,
+        dateTo,
+        biomarkers,
+        patientId,
+        rowLimit,
+      });
+      rows = localRes.rows;
+      allBiomarkers = localRes.biomarkers;
+      biomarkerGroups = localRes.biomarkerGroups;
+      minDate = localRes.dateRange.min;
+      maxDate = localRes.dateRange.max;
+      source = "local_csv";
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error("Local CSV error, falling back to demo:", e);
+      demoReason = `Local CSV query failed: ${msg}`;
       rows = generateDemoRows({ dateFrom, dateTo, biomarkerFilter: biomarkers, patientId });
       source = "demo";
     }
-  } else {
-    rows = generateDemoRows({ dateFrom, dateTo, biomarkerFilter: biomarkers, patientId });
   }
 
-  const biomarkerSet = new Set(rows.map((r) => r.biomarker));
-  const biomarkerList = Array.from(biomarkerSet).sort();
-  const dates = rows.map((r) => r.visit_date).sort();
-  const correlation = correlationMatrix(rows, biomarkerList);
-  const summary = summaryStats(rows, biomarkerList);
+  // Derive biomarker list and groups if not already provided by the loader
+  if (!allBiomarkers) {
+    const biomarkerSet = new Set(rows.map((r) => r.biomarker));
+    allBiomarkers = Array.from(biomarkerSet).sort();
+  }
 
-  const biomarkerGroups: Record<string, string[]> = {};
-  for (const r of rows) {
-    if (r.group && r.biomarker) {
-      if (!biomarkerGroups[r.group]) {
-        biomarkerGroups[r.group] = [];
-      }
-      if (!biomarkerGroups[r.group].includes(r.biomarker)) {
-        biomarkerGroups[r.group].push(r.biomarker);
+  if (!biomarkerGroups) {
+    biomarkerGroups = {};
+    for (const r of rows) {
+      if (r.group && r.biomarker) {
+        if (!biomarkerGroups[r.group]) {
+          biomarkerGroups[r.group] = [];
+        }
+        if (!biomarkerGroups[r.group].includes(r.biomarker)) {
+          biomarkerGroups[r.group].push(r.biomarker);
+        }
       }
     }
   }
+
+  // Calculate correlation matrix and summary statistics across active markers
+  const correlation = correlationMatrix(rows, allBiomarkers);
+  const summary = summaryStats(rows, allBiomarkers);
 
   const payload: DataResponse = {
     source,
     ...(demoReason ? { demoReason } : {}),
     rows,
-    biomarkers: biomarkerList,
+    biomarkers: allBiomarkers,
     biomarkerGroups: Object.keys(biomarkerGroups).length > 0 ? biomarkerGroups : undefined,
     dateRange: {
-      min: dates[0] ?? dateFrom,
-      max: dates[dates.length - 1] ?? dateTo,
+      min: minDate,
+      max: maxDate,
     },
     rowCount: rows.length,
     correlation,

@@ -1,11 +1,34 @@
+/**
+ * @file route.ts
+ * @module app/api/explain/route
+ * @description Clinical AI Assistant endpoint synthesizing biomarker data, reference ranges, and trend analysis.
+ *
+ * Architecture:
+ * 1. Validates context payload (filters, active biomarker rows, correlation matrix, summary statistics).
+ * 2. Enriches prompt with clinical reference ranges (`CLINICAL_RANGES`) and multi-biomarker pattern detection.
+ * 3. Executes cascading LLM provider chain:
+ *    - Google Gemini (`gemini-2.5-flash` / `gemini-2.0-flash`)
+ *    - Hugging Face MedGemma (`google/medgemma-27b-text-it`)
+ *    - OpenAI GPT (`gpt-5.5` / `gpt-4o`)
+ *    - Local Structured Clinical Snapshot (offline fallback with normal range checks)
+ *
+ * @example
+ * ```bash
+ * curl -X POST http://localhost:3000/api/explain \
+ *   -H "Content-Type: application/json" \
+ *   -d '{"question": "Explain my HbA1c trend", "context": {"dataSource": "local_csv", "rowCount": 12}}'
+ * ```
+ */
+
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getServerEnv } from "@/lib/env";
 import { generateExplanationOpenAI } from "@/lib/openai";
 import { generateExplanationHuggingFace } from "@/lib/huggingface";
+import { generateExplanationGemini } from "@/lib/gemini";
 import { annotateWithRanges, detectClinicalPatterns, CLINICAL_RANGES } from "@/lib/clinical-ranges";
 
-/** JSON may contain null where client had NaN; Zod rejects NaN on number. */
+/** JSON preprocess: transforms NaN values to null to ensure valid Zod numerical validation */
 const finiteOrNull = z.preprocess(
   (v) =>
     typeof v === "number" && !Number.isFinite(v)
@@ -14,6 +37,7 @@ const finiteOrNull = z.preprocess(
   z.union([z.number(), z.null()]),
 );
 
+/** Zod schema for individual biomarker summary statistics */
 const summaryEntry = z.object({
   mean: finiteOrNull,
   std: finiteOrNull,
@@ -22,6 +46,7 @@ const summaryEntry = z.object({
   n: z.number().int().nonnegative(),
 });
 
+/** Zod schema for individual observation records */
 const biomarkerRowSchema = z.object({
   patient_id: z.string().optional(),
   visit_date: z.string(),
@@ -29,17 +54,21 @@ const biomarkerRowSchema = z.object({
   value: z.number(),
 });
 
+/** Validation schema for the explain POST request body */
 const bodySchema = z.object({
-  question: z.string().min(1).max(8000),
+  /** User's natural language clinical question */
+  question: z.string().min(1, "Question cannot be empty").max(8000),
+  /** Dashboard analytics context to ground LLM reasoning */
   context: z.object({
     filters: z
       .object({
         dateFrom: z.string(),
         dateTo: z.string(),
         biomarkers: z.array(z.string()).optional(),
+        patientId: z.string().optional(),
       })
       .optional(),
-    dataSource: z.enum(["bigquery", "demo"]),
+    dataSource: z.enum(["bigquery", "demo", "local_csv", "csv"]).or(z.string()),
     summary: z.record(z.string(), summaryEntry).optional(),
     correlation: z.record(
       z.string(),
@@ -51,10 +80,18 @@ const bodySchema = z.object({
   }),
 });
 
+/** Formats a numeric value to 3 decimal places or 'n/a' if missing */
 function fmt(n: number | null) {
   return n !== null && Number.isFinite(n) ? n.toFixed(3) : "n/a";
 }
 
+/**
+ * Generates a deterministic offline structured clinical summary when external LLM APIs are unavailable.
+ *
+ * @param question - User's query
+ * @param ctx - Dashboard analytics context
+ * @returns Structured plain text summary
+ */
 function localStubAnswer(question: string, ctx: z.infer<typeof bodySchema>["context"]) {
   let dataLines: string[] = [];
   
@@ -88,13 +125,17 @@ function localStubAnswer(question: string, ctx: z.infer<typeof bodySchema>["cont
 }
 
 /**
- * Build enriched prompt with clinical reference ranges and pattern detection.
+ * Builds an enriched prompt incorporating exact date-level measurements, reference ranges, and clinical alerts.
+ *
+ * @param question - User's clinical inquiry
+ * @param context - Dashboard state snapshot
+ * @returns Comprehensive clinical prompt string
  */
 function buildEnrichedPrompt(
   question: string,
   context: z.infer<typeof bodySchema>["context"],
 ): string {
-  // 0. Build date-level data if rows are available (User: "exact date-level values should be provided")
+  // 1. Build date-level longitudinal records
   let dataContent = "";
   if (context.rows && context.rows.length > 0) {
     const selected = new Set(context.filters?.biomarkers || []);
@@ -123,17 +164,17 @@ function buildEnrichedPrompt(
     }
   }
 
-  // Annotate biomarkers with clinical reference ranges + flags (if summary is available)
+  // 2. Annotate cohort aggregates with clinical reference ranges
   const annotatedStats = context.summary ? annotateWithRanges(
     context.summary as Record<string, { mean: number | null; std: number | null; min: number | null; max: number | null; n: number }>,
   ) : "";
 
-  // Detect multi-biomarker clinical patterns (if summary is available)
+  // 3. Detect multi-biomarker clinical patterns (liver, renal, metabolic)
   const patterns = context.summary ? detectClinicalPatterns(
     context.summary as Record<string, { mean: number | null; n: number }>,
   ) : [];
 
-  // Extract notable correlations (|r| > 0.3, skip diagonal)
+  // 4. Extract notable correlations (|r| > 0.3)
   const corrPairs: string[] = [];
   if (context.correlation) {
     const corrKeys = Object.keys(context.correlation);
@@ -174,7 +215,6 @@ function buildEnrichedPrompt(
     );
   }
 
-  // Also include the reference ranges separately for LLM lookup if not using summary
   if (dataContent && !annotatedStats) {
     const uniqueMarkers = Array.from(new Set(context.rows?.map(r => r.biomarker) || []));
     const rangeLines = uniqueMarkers.map(m => {
@@ -188,12 +228,18 @@ function buildEnrichedPrompt(
 
   sections.push(
     "",
-    "Instructions: Analyze the above data in clinical context. Reference the normal ranges, flag abnormalities, explain correlations, and identify patterns relevant to the user's question. Be precise and evidence-based. If exact date-level data is provided, prioritize it for trend analysis over aggregate means.",
+    "Instructions: Analyze the above data in clinical context. Reference normal ranges, flag abnormalities, explain correlations, and identify patterns relevant to the user's question. Be precise and evidence-based. If exact date-level data is provided, prioritize it for trend analysis over aggregate means.",
   );
 
   return sections.filter(Boolean).join("\n");
 }
 
+/**
+ * Handles HTTP POST requests to generate AI-assisted clinical biomarker explanations.
+ *
+ * @param req - HTTP Request with JSON body matching `bodySchema`
+ * @returns JSON response with `{ answer, mode, warning }`
+ */
 export async function POST(req: Request) {
   let json: unknown;
   try {
@@ -213,12 +259,23 @@ export async function POST(req: Request) {
   const { question, context } = parsed.data;
   const env = getServerEnv();
 
-  // Build enriched prompt with clinical context and date-level data
   const prompt = buildEnrichedPrompt(question, context);
-
   const errors: string[] = [];
 
-  // 1. Try Hugging Face MedGemma (primary clinical model if configured)
+  // 1. Primary: Google Gemini API
+  const geminiKey = process.env.GEMINI_API_KEY;
+  if (geminiKey) {
+    try {
+      const answer = await generateExplanationGemini(geminiKey, prompt);
+      return NextResponse.json({ answer, mode: "gemini" as const });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn("Gemini explain error:", msg);
+      errors.push(`Gemini: ${msg}`);
+    }
+  }
+
+  // 2. Clinical Specialist: Hugging Face MedGemma
   const hfKey = process.env.HUGGINGFACE_API_KEY || process.env.HF_TOKEN;
   if (hfKey) {
     try {
@@ -226,12 +283,12 @@ export async function POST(req: Request) {
       return NextResponse.json({ answer, mode: "medgemma" as const });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      console.error("Hugging Face / MedGemma explain error:", msg);
+      console.warn("Hugging Face / MedGemma explain error:", msg);
       errors.push(`MedGemma: ${msg}`);
     }
   }
 
-  // 2. Try OpenAI (GPT-5.5) as primary or fallback
+  // 3. Fallback: OpenAI GPT
   const openaiKey = process.env.OPENAI_API_KEY;
   if (openaiKey) {
     try {
@@ -239,18 +296,18 @@ export async function POST(req: Request) {
       return NextResponse.json({ answer, mode: "openai" as const });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      console.error("OpenAI explain error:", msg);
+      console.warn("OpenAI explain error:", msg);
       errors.push(`OpenAI: ${msg}`);
     }
   }
 
-  // 3. Local stub fallback
+  // 4. Local structured clinical snapshot fallback
   const answer = localStubAnswer(question, context);
   return NextResponse.json({
     answer,
     mode: "local_stub" as const,
     warning: errors.length
-      ? `LLM errors: ${errors.join(" | ")}`
-      : "Set HUGGINGFACE_API_KEY (or HF_TOKEN) for MedGemma, or OPENAI_API_KEY for fallback.",
+      ? `Offline analysis (API keys unavailable / inactive: ${errors.join(" | ")})`
+      : "Offline clinical analysis mode.",
   });
 }

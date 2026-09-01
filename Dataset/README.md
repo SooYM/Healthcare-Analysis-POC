@@ -61,8 +61,9 @@ This project transforms raw medical laboratory CSV data into a fully normalized 
                 ▼
 ┌─────────────────────────────────────────┐
 │     HEALTHCARE DASHBOARD (Next.js)      │
-│  bigquery.ts → UNPIVOT → BiomarkerRow[]│
-│  14 views → single long-format stream   │
+│  • Local CSV Engine: local-dataset.ts   │
+│  • BigQuery Engine:  bigquery.ts        │
+│  • MySQL 8.0 Script: healthcare_mysql   │
 └─────────────────────────────────────────┘
 ```
 

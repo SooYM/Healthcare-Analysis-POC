@@ -1,16 +1,58 @@
+/**
+ * @file bigquery.ts
+ * @module lib/bigquery
+ * @description Google Cloud BigQuery client and dynamic UNPIVOT / UNION ALL query engine.
+ *
+ * This module dynamically discovers numeric biomarker columns across 14 analytics views
+ * using BigQuery's `INFORMATION_SCHEMA.COLUMNS`, generates SQL `UNPIVOT` branches on the fly,
+ * and streams longitudinal biomarker observation records into standard `BiomarkerRow[]` format.
+ *
+ * @example
+ * ```ts
+ * import { queryBiomarkerLong, queryDistinctPatients } from "@/lib/bigquery";
+ * import { getServerEnv } from "@/lib/env";
+ *
+ * const env = getServerEnv();
+ * const patients = await queryDistinctPatients(env);
+ * const rows = await queryBiomarkerLong(env, {
+ *   dateFrom: "2018-08-24",
+ *   dateTo: "2019-07-24",
+ *   rowLimit: 10000,
+ * });
+ * ```
+ */
+
 import { BigQuery } from "@google-cloud/bigquery";
 import type { BiomarkerRow } from "@/types";
 import type { AppEnv } from "@/lib/env";
 import { parseBigQueryViewNames } from "@/lib/env";
 
+/** Regular expression validating dataset identifier safety to prevent SQL injection */
 const datasetIdSafe = /^[A-Za-z0-9_]+$/;
 
+/**
+ * Validates that a BigQuery dataset identifier contains only alphanumeric characters and underscores.
+ *
+ * @param id - Dataset identifier to validate
+ * @throws Error if the dataset identifier contains invalid characters
+ */
 function assertDatasetId(id: string) {
   if (!datasetIdSafe.test(id)) {
     throw new Error(`Invalid BIGQUERY_DATASET: ${id}`);
   }
 }
 
+/**
+ * Queries BigQuery's `INFORMATION_SCHEMA.COLUMNS` to identify all numeric columns
+ * across the specified view tables, excluding demographic and metadata columns.
+ *
+ * @param client - Authenticated BigQuery client instance
+ * @param project - GCP Project ID
+ * @param dataset - BigQuery Dataset name (e.g., 'A2')
+ * @param viewNames - List of view table names to inspect
+ * @param ignoreCols - Array of column names to exclude (e.g., patient ID, visit date)
+ * @returns Dictionary mapping table name to array of numeric column names
+ */
 async function getNumericColumns(
   client: BigQuery,
   project: string,
@@ -49,6 +91,19 @@ async function getNumericColumns(
   return result;
 }
 
+/**
+ * Constructs an SQL UNPIVOT query branch for a specific BigQuery table/view.
+ * Transposes wide-format biomarker columns into long-format (patient_id, visit_date, biomarker, value).
+ *
+ * @param fullTableId - Fully qualified table path (`project.dataset.table`)
+ * @param tableName - Short name of the view/table (used as group category)
+ * @param cols - Array of numeric column names to unpivot
+ * @param pid - Patient ID column alias
+ * @param vd - Visit Date column alias
+ * @param includeBiomarkerFilter - Whether to append biomarker whitelist filtering
+ * @param hasPatientId - Whether to append patient ID equality filter
+ * @returns Formatted SQL SELECT UNPIVOT branch string
+ */
 function buildUnpivotBranch(
   fullTableId: string,
   tableName: string,
@@ -93,6 +148,14 @@ function buildUnpivotBranch(
   return branch.trim();
 }
 
+/**
+ * Queries BigQuery across multiple fact views using dynamic UNPIVOT and UNION ALL.
+ *
+ * @param env - Application configuration environment
+ * @param params - Date boundaries, biomarker filters, row limits, and optional patient ID
+ * @throws Error if GCP_PROJECT_ID is missing or view configuration is invalid
+ * @returns Array of unpivoted `BiomarkerRow` objects
+ */
 export async function queryBiomarkerLong(
   env: AppEnv,
   params: {
@@ -126,7 +189,7 @@ export async function queryBiomarkerLong(
     if (!singleTableFqn) {
       throw new Error("Set BIGQUERY_VIEW_NAMES or BIGQUERY_TABLE_FQN with GCP_PROJECT_ID for BigQuery");
     }
-    // Try to parse dataset and table from FQN: project.dataset.table
+    // Parse dataset and table from FQN: project.dataset.table
     const parts = singleTableFqn.split('.');
     if (parts.length >= 2) {
       dataset = parts[parts.length - 2];
@@ -143,6 +206,7 @@ export async function queryBiomarkerLong(
   const includeBm = Boolean(biomarkers?.length);
   const hasPatientId = Boolean(params.patientId?.trim());
 
+  // Dynamically inspect column data types from INFORMATION_SCHEMA
   const tableColumns = await getNumericColumns(client, project, dataset, viewNames, ignoreCols);
 
   const branches: string[] = [];
@@ -194,6 +258,13 @@ export async function queryBiomarkerLong(
   }));
 }
 
+/**
+ * Queries all distinct patient IDs from the primary BigQuery dataset view.
+ *
+ * @param env - Application configuration environment
+ * @throws Error if GCP_PROJECT_ID is missing or view configuration is invalid
+ * @returns Sorted array of unique patient ID strings
+ */
 export async function queryDistinctPatients(env: AppEnv): Promise<string[]> {
   const project = env.GCP_PROJECT_ID;
   if (!project) {
@@ -228,8 +299,7 @@ export async function queryDistinctPatients(env: AppEnv): Promise<string[]> {
 
   if (viewNames.length === 0) return [];
 
-  // To be safe and efficient, we query distinct patients from the first available view/table.
-  // Assuming all views share the same base cohort of patients.
+  // Query distinct patients from first view table (all views share the cohort dimension)
   const name = viewNames[0];
   const fullId = isSingleTable ? singleTableFqn! : `${project}.${dataset}.${name}`;
 

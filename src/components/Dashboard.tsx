@@ -1,3 +1,18 @@
+/**
+ * @file Dashboard.tsx
+ * @module components/Dashboard
+ * @description Main interactive healthcare analytics dashboard component.
+ *
+ * Provides:
+ * - Patient search & auto-complete filtering across 1,154 patients.
+ * - Date range controls and multi-panel biomarker selection.
+ * - Longitudinal trend charts with multi-level drill-down (Year -> Month -> Day).
+ * - Interactive scatter plots for same-visit biomarker correlations.
+ * - Dynamic Pearson correlation heatmaps with summary statistics cards.
+ * - 3D Multidimensional OLAP Cube integration (`OlapCube.tsx`).
+ * - AI Clinical Assistant panel with Markdown rendering and reference range context.
+ */
+
 "use client";
 
 import dynamic from "next/dynamic";
@@ -326,14 +341,19 @@ export function Dashboard() {
       const json = (await res.json()) as DataResponse;
       setData(json);
       // If this is the first load, or the patient changed, auto-select only the first view table
-      if (json.biomarkers.length && (selectedBiomarkers.length === 0 || patientChanged)) {
-        const groups = json.biomarkerGroups;
-        if (groups && Object.keys(groups).length > 0) {
-          const firstGroupKey = Object.keys(groups)[0];
-          setSelectedBiomarkers(groups[firstGroupKey]);
-        } else {
-          setSelectedBiomarkers(json.biomarkers.slice(0, 4));
-        }
+      if (json.biomarkers.length) {
+        setSelectedBiomarkers((prev) => {
+          if (prev.length === 0 || patientChanged) {
+            const groups = json.biomarkerGroups;
+            if (groups && Object.keys(groups).length > 0) {
+              const firstGroupKey = Object.keys(groups)[0];
+              return groups[firstGroupKey];
+            } else {
+              return json.biomarkers.slice(0, 4);
+            }
+          }
+          return prev;
+        });
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load data");
@@ -677,7 +697,7 @@ export function Dashboard() {
           </div>
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <span className="rounded-full border border-glass-200 bg-glass-50 px-3 py-1.5 text-ink-200">
-              Source: <span className="font-medium text-white">{data?.source ?? "—"}</span>
+              Source: <span className="font-medium text-clinic-teal">{data?.source === "local_csv" ? "Local CSV" : (data?.source ?? "—")}</span>
             </span>
             <span className="rounded-full border border-glass-200 bg-glass-50 px-3 py-1.5 text-ink-200">
               Rows: <span className="font-medium text-white">{data ? data.rowCount.toLocaleString() : "—"}</span>

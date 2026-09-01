@@ -1,3 +1,17 @@
+/**
+ * @file OlapCube.tsx
+ * @module components/OlapCube
+ * @description 3D Multidimensional On-Line Analytical Processing (OLAP) Cube visualizer.
+ *
+ * Implements:
+ * - 4-dimensional hypercube mapping: Time (Grain: Day/Month), Biomarker, Patient, Group.
+ * - OLAP Operations:
+ *   - Slice: Pin one dimension to a single coordinate and project a 2D matrix.
+ *   - Dice: Sub-select a sub-cube defined by multiple dimensional filters.
+ *   - Roll-up / Drill-down: Granularity toggle across time hierarchy.
+ * - Interactive 3D Bar Visualizations via ECharts GL and 2D Heatmap projections.
+ */
+
 "use client";
 
 import dynamic from "next/dynamic";

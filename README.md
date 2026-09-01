@@ -1,40 +1,122 @@
-# Biomarker Observatory — Healthcare Dashboard
+# Biomarker Observatory — Healthcare Analytics Platform
 
-A high-performance, AI-augmented healthcare analytics dashboard built with Next.js, BigQuery, and Vertex AI. Explore longitudinal trends, correlation structures, and clinical insights across patient cohorts with ease.
+A high-performance, AI-augmented healthcare analytics platform built with **Next.js 15**, **React 19**, and **Apache ECharts**. The system ingests, normalizes, and visualizes longitudinal patient biomarker records across cohorts, featuring sub-second query performance, real-time Pearson correlation matrix calculation, 3D multidimensional OLAP slicing, and clinical AI reasoning.
 
-## 🚀 Features
+---
 
--   **BigQuery Integration**: Directly query large-scale healthcare data stored in Google BigQuery via **14 analytics-ready views** (star-schema, UNION ALL long-format).
--   **Included Dataset**: Ships with the full medical-records dataset (`Dataset/`) — 3 source CSVs, individual SQL scripts for dimensions/facts/views, and the original `Script 2.0.pdf` — ready for one-click BigQuery loading.
--   **AI Clinical Assistant**: Cascading provider chain — **Google Gemini** (primary, API-key auth), **Hugging Face MedGemma** (clinical specialist), **OpenAI GPT-5.5** (fallback), or local stub — providing natural language explanations and insights for complex biomarker data.
--   **Dynamic Visualizations**: 
-    -   **Longitudinal Trends**: Multi-level drill-down (Year → Month → Day) to observe biomarker changes over time.
-    -   **Interactive Scatter Plots**: Analyze relationships between biomarker pairs within the same visit.
-    -   **Correlation Heatmaps**: Visualize the Pearson correlation structure across the entire cohort or specific filters.
-    -   **3D OLAP Cube**: Advanced multidimensional data exploration (via `OlapCube.tsx`).
--   **Intelligent Filtering**: Granular filtering by date range, patient ID (with searchable autocomplete), and biomarker groups.
--   **Responsive & High-Performance**: Built with Next.js 15, React 19, and ECharts for smooth interaction with large datasets.
+## 📖 Table of Contents
 
-## 🛠️ Tech Stack
+- [Overview & Purpose](#-overview--purpose)
+- [Which Files to Look at First](#-which-files-to-look-at-first)
+- [Key Features](#-key-features)
+- [System Architecture](#-system-architecture)
+- [Data Storage & Modes](#-data-storage--modes)
+- [Getting Started](#-getting-started)
+- [Documentation Index](#-documentation-index)
+- [Tech Stack](#-tech-stack)
+- [Environment Configuration](#-environment-configuration)
+- [Maintainers & Contributing](#-maintainers--contributing)
 
--   **Framework**: [Next.js 15](https://nextjs.org/) (App Router, TypeScript)
--   **Styling**: [Tailwind CSS](https://tailwindcss.com/) & Vanilla CSS
--   **Visualizations**: [Apache ECharts](https://echarts.apache.org/) & [Framer Motion](https://framer.com/motion/)
--   **Cloud Infrastructure**: [Google Cloud Platform (GCP)](https://cloud.google.com/)
-    -   **Database**: [BigQuery](https://cloud.google.com/bigquery)
-    -   **AI**: [Vertex AI (Gemini)](https://cloud.google.com/vertex-ai)
--   **AI Providers**: [Google Gemini API](https://ai.google.dev/) (primary), [HuggingFace MedGemma](https://huggingface.co/google/medgemma-27b-text-it) (clinical), [OpenAI API](https://openai.com/api/) (fallback)
+---
+
+## 🎯 Overview & Purpose
+
+This repository contains the complete full-stack web application, data warehouse star-schema definitions, and source medical datasets for the **Biomarker Observatory**.
+
+### What this directory holds:
+- **`src/`**: Next.js App Router full-stack codebase (React 19 presentation layer, API routes, in-memory analytics engine, BigQuery connector, statistical modules, AI providers).
+- **`Dataset/`**: Raw clinical data files (`Medical Records.csv`, `MedIDDetails.csv`, `AgeCategories.csv`) and 34 SQL transformation scripts (Star Schema for BigQuery and MySQL 8.0).
+- **`docs/`**: Comprehensive technical architecture, database schema, API reference, and developer onboarding manuals.
+
+---
+
+## 🔍 Which Files to Look at First
+
+| Area | Primary Files | Description |
+| :--- | :--- | :--- |
+| **API Endpoints** | [`src/app/api/data/route.ts`](file:///Users/sooyauming/Desktop/Intern/healthcare-dashboard/src/app/api/data/route.ts)<br>[`src/app/api/patients/route.ts`](file:///Users/sooyauming/Desktop/Intern/healthcare-dashboard/src/app/api/patients/route.ts)<br>[`src/app/api/explain/route.ts`](file:///Users/sooyauming/Desktop/Intern/healthcare-dashboard/src/app/api/explain/route.ts) | Backend routes handling cohort queries, patient lookup, and AI clinical assistant responses. |
+| **Local Data Engine** | [`src/lib/local-dataset.ts`](file:///Users/sooyauming/Desktop/Intern/healthcare-dashboard/src/lib/local-dataset.ts) | In-memory singleton parser and indexer for `Dataset/Medical Records.csv`. |
+| **BigQuery Engine** | [`src/lib/bigquery.ts`](file:///Users/sooyauming/Desktop/Intern/healthcare-dashboard/src/lib/bigquery.ts) | Dynamic UNPIVOT and UNION ALL engine across 14 fact views. |
+| **Statistical Engine** | [`src/lib/stats.ts`](file:///Users/sooyauming/Desktop/Intern/healthcare-dashboard/src/lib/stats.ts) | Real-time Pearson correlation matrix and cohort aggregate calculation. |
+| **Dashboard UI** | [`src/components/Dashboard.tsx`](file:///Users/sooyauming/Desktop/Intern/healthcare-dashboard/src/components/Dashboard.tsx)<br>[`src/components/OlapCube.tsx`](file:///Users/sooyauming/Desktop/Intern/healthcare-dashboard/src/components/OlapCube.tsx) | Interactive analytics frontend with longitudinal drill-downs, scatter plots, heatmaps, and 3D OLAP Cube. |
+
+---
+
+## 🚀 Key Features
+
+- **Zero-Cloud Local In-Memory Engine**: Instantly loads and indexes 13,848 patient visits, 1,154 patients, and 78 numeric biomarkers across 14 clinical panels with $<10\text{ms}$ query latency.
+- **Enterprise BigQuery Integration**: Direct querying against cloud Star Schema data warehouses via 14 analytics views using dynamic schema discovery and single-pass `UNPIVOT` + `UNION ALL`.
+- **4-Tier AI Clinical Cascade**: Intelligent clinical assistant prioritizing **Google Gemini** $\rightarrow$ **Hugging Face MedGemma** $\rightarrow$ **OpenAI GPT** $\rightarrow$ **Offline Reference Range Analysis Engine**.
+- **Interactive Visual Analytics**:
+  - **Longitudinal Trends**: 3-tier hierarchical drill-down (`Year` $\rightarrow$ `Month` $\rightarrow$ `Day`).
+  - **Scatter Correlations**: Same-visit paired biomarker scatter plots with linear trends.
+  - **Pearson Correlation Heatmap**: Synchronous $N \times N$ correlation matrix rendering.
+  - **3D OLAP Hypercube**: 4D slicing/dicing across Time, Biomarker, Patient, and Clinical Panel.
+- **Searchable Patient Discovery**: Real-time autocomplete across all 1,154 cohort patient IDs.
+
+---
+
+## 🏛️ System Architecture
+
+```mermaid
+flowchart LR
+    subgraph Storage ["Data Sources"]
+        CSV["Local CSV\n(13.8k records)"]
+        BQ["Google BigQuery\n(Star Schema A2)"]
+        MySQL["MySQL 8.0\n(phpMyAdmin DDL)"]
+    end
+
+    subgraph Backend ["Next.js App Router API"]
+        LocalEng["Local Dataset Engine\n(local-dataset.ts)"]
+        BQEng["BigQuery Engine\n(bigquery.ts)"]
+        StatsEng["Stats Engine\n(stats.ts)"]
+        AICascade["AI Cascade Engine\n(Gemini · MedGemma · GPT)"]
+    end
+
+    subgraph Frontend ["React 19 / ECharts UI"]
+        Dashboard["Dashboard View"]
+        OLAP["3D OLAP Cube"]
+        AIChat["AI Explain Panel"]
+    end
+
+    CSV --> LocalEng
+    BQ --> BQEng
+    LocalEng & BQEng --> StatsEng --> Dashboard
+    AICascade --> AIChat
+    Dashboard --- OLAP
+```
+
+For complete architectural details, see [System Design Specification](docs/SYSTEM_DESIGN.md).
+
+---
+
+## 💾 Data Storage & Modes
+
+| Data Mode | Configuration | Characteristics |
+| :--- | :--- | :--- |
+| **Local In-Memory CSV** *(Default)* | `DATA_SOURCE=local` | Zero-cloud, instant responses, loads `Dataset/Medical Records.csv` directly. |
+| **BigQuery Star Schema** | `DATA_SOURCE=bigquery` | Cloud data warehouse querying 6 dimensions & 14 fact views in dataset `A2`. |
+| **MySQL 8.0 Relational** | Import `Dataset/Script/MySQL/healthcare_dashboard_mysql.sql` | Standard SQL dump for phpMyAdmin / MySQL relational databases. |
+| **Synthetic Demo Mode** | `DEMO_MODE=true` | Deterministic PRNG simulation for testing without data files. |
+
+For complete schema details, see [Database Schema Specification](docs/DATABASE_SCHEMA.md).
+
+---
 
 ## 🏁 Getting Started
 
-### Prerequisites
+```bash
+# 1. Clone the repository
+git clone https://github.com/SooYM/Healthcare-Analysis.git
+cd Healthcare-Analysis
 
--   Node.js 18.x or later
--   NPM or Yarn
--   A Google Cloud Project (for BigQuery/Vertex AI features)
+# 2. Install dependencies
+npm install
 
-### Installation
+# 3. Configure environment
+cp .env.example .env.local
 
+<<<<<<< HEAD
 1.  **Clone the repository**:
     ```bash
     git clone <repository-url>
@@ -142,22 +224,68 @@ Dataset/
 public/             # Static assets
 scripts/            # Utility scripts for data processing or deployment
 PSEUDOCODE.md       # Detailed pseudocode & system walkthrough
+=======
+# 4. Start local development server
+npm run dev
+>>>>>>> bb369b3 (feat(core): integrate in-memory dataset loader, add comprehensive documentation and system architecture)
 ```
 
-## 📖 Documentation
+Open **http://localhost:3000** to explore the observatory. For step-by-step developer instructions, see [Getting Started Guide](docs/GETTING_STARTED.md).
 
-For a detailed explanation of how every module works, the data flow from BigQuery to the browser, and the AI explanation pipeline, see **[PSEUDOCODE.md](./PSEUDOCODE.md)**.
+---
 
-It covers:
--   System architecture overview with ASCII diagrams
--   Data types and shapes
--   API route logic (data fetching, AI explain, patient listing)
--   BigQuery UNPIVOT strategy for wide-to-long transformation
--   Statistics engine (Pearson correlation, summary stats)
--   Clinical reference ranges and pattern detection
--   OLAP cube operations (slice, dice, drill, across)
--   AI provider cascade (Gemini → MedGemma → OpenAI → local stub)
+## 📚 Documentation Index
 
-For the included medical-records dataset and its BigQuery star-schema design, see **[Dataset/README.md](./Dataset/README.md)**.
+Detailed documentation is available in the [`docs/`](docs/) directory:
 
-## 📄 License
+- [**System Design & Architecture (`docs/SYSTEM_DESIGN.md`)**](docs/SYSTEM_DESIGN.md): Subsystem designs, sequence diagrams, latency benchmarks, and component contracts.
+- [**Database & Star Schema Reference (`docs/DATABASE_SCHEMA.md`)**](docs/DATABASE_SCHEMA.md): Complete Data Dictionary, ER diagrams, 6 Dimensions, 14 Fact tables, and Analytics Views.
+- [**REST API Reference (`docs/API_REFERENCE.md`)**](docs/API_REFERENCE.md): JSON endpoints, payload schemas, error handling, and curl examples.
+- [**Developer & Setup Guide (`docs/GETTING_STARTED.md`)**](docs/GETTING_STARTED.md): Prerequisites, build scripts, debugging, and deployment instructions.
+- [**Algorithmic Walkthrough (`PSEUDOCODE.md`)**](PSEUDOCODE.md): Mathematical pseudocode for correlation, unpivoting, and OLAP cube calculations.
+- [**Dataset Guide (`Dataset/README.md`)**](Dataset/README.md): Detailed inventory of raw CSV files, SQL scripts, and MySQL schemas.
+
+---
+
+## 🛠️ Tech Stack
+
+- **Framework**: [Next.js 15](https://nextjs.org/) (App Router, TypeScript 5.7)
+- **UI Library**: [React 19](https://react.dev/)
+- **Visualizations**: [Apache ECharts 5.6](https://echarts.apache.org/) & [ECharts GL 2.0](https://github.com/ecomfe/echarts-gl)
+- **Styling & Animations**: [Tailwind CSS 3.4](https://tailwindcss.com/) & [Framer Motion 12](https://framer.com/motion/)
+- **Data Warehousing**: [Google BigQuery](https://cloud.google.com/bigquery) & [MySQL 8.0](https://www.mysql.com/)
+- **AI / LLM Providers**: [Google Gemini API](https://ai.google.dev/) (Primary), [Hugging Face MedGemma](https://huggingface.co/google/medgemma-27b-text-it), [OpenAI API](https://openai.com/)
+- **Validation**: [Zod 3.24](https://zod.dev/)
+
+---
+
+## ⚙️ Environment Configuration
+
+```ini
+# Data Mode Configuration
+DATA_SOURCE=local
+LOCAL_DATASET_PATH=Dataset/Medical Records.csv
+DEMO_MODE=false
+
+# Google Gemini API (Primary Explain Provider)
+GEMINI_API_KEY=AIzaSy...
+GEMINI_MODEL=gemini-2.5-flash
+
+# BigQuery Configuration (Only needed if DATA_SOURCE=bigquery)
+GCP_PROJECT_ID=bigquery-tutorial-480009
+BIGQUERY_LOCATION=US
+BIGQUERY_DATASET=A2
+BIGQUERY_VIEW_NAMES=View_Fact_Urine,View_Fact_CBC,View_Fact_Platelet_Profile,View_Fact_Lipid_Profile,View_Fact_Liver_Function,View_Fact_Kidney_Function,View_Fact_Iron_Profile,View_Fact_HbA1c,View_Fact_Urine_ACR,View_Fact_Calcium_Phos,View_Fact_Thyroid_Profile,View_Fact_Glucose_Fasting,View_Fact_Glucose_PP,View_Fact_Glucose_Diagnopath
+GOOGLE_APPLICATION_CREDENTIALS=.secrets/bigquery-sa.json
+
+# Optional Fallback Providers
+OPENAI_API_KEY=sk-...
+HUGGINGFACE_API_KEY=hf_...
+```
+
+---
+
+## 👥 Maintainers & Contributing
+
+Maintained by **Soo Yau Ming** ([@SooYM](https://github.com/SooYM)).  
+For issues, architectural questions, or feature requests, please open an issue or pull request in the [GitHub Repository](https://github.com/SooYM/Healthcare-Analysis).
